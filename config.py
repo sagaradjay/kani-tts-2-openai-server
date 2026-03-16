@@ -1,5 +1,7 @@
 """Configuration and constants for Kani TTS"""
 
+import os
+
 # Tokenizer configuration
 TOKENIZER_LENGTH = 64400
 
@@ -47,5 +49,6 @@ USE_CUDA_GRAPHS = True
 ATTN_IMPLEMENTATION = "sdpa"
 
 # Model paths
-MODEL_NAME = "shiprocket-ai/kani-tts-2-hindi-95000"
+# Override MODEL_NAME via env var MODEL_NAME if supplied
+MODEL_NAME = os.getenv("MODEL_NAME", "shiprocket-ai/kani-tts-2-hindi-95000")
 CODEC_MODEL_NAME = "nvidia/nemo-nano-codec-22khz-0.6kbps-12.5fps"
