@@ -1,7 +1,9 @@
 """FastAPI server for Kani TTS with streaming support"""
 
 import io
-from fastapi import FastAPI, HTTPException
+import os
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, Field
@@ -21,6 +23,10 @@ from speaker_embedder import SpeakerEmbedder
 SPEAKERS_DIR = Path(__file__).parent / "speakers"
 VOICES_DIR = Path(__file__).parent / "voices"
 
+# AUTH_TOKEN: when set (non-empty), API requires Authorization: Bearer <token>
+# Pass at runtime via -e AUTH_TOKEN=... ; if not set, defaults to "" (no auth)
+AUTH_TOKEN = os.getenv("AUTH_TOKEN", "")
+
 from nemo.utils.nemo_logging import Logger
 
 nemo_logger = Logger()
@@ -37,6 +43,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Require Authorization: Bearer <AUTH_TOKEN> when AUTH_TOKEN is set."""
+    if AUTH_TOKEN:
+        # Skip auth for health and root
+        if request.url.path in ("/", "/health"):
+            return await call_next(request)
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Bearer ") or auth[7:].strip() != AUTH_TOKEN:
+            return Response(
+                content='{"detail":"Missing or invalid Authorization"}',
+                status_code=401,
+                media_type="application/json",
+            )
+    return await call_next(request)
 
 # Global instances (initialized on startup)
 generator = None
