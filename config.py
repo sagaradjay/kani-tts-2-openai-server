@@ -26,8 +26,8 @@ CHUNK_SIZE = 25  # Number of new frames to output per iteration
 LOOKBACK_FRAMES = 15  # Number of frames to include from previous context
 
 # Generation configuration
-TEMPERATURE = 0.7
-TOP_P = 0.9
+TEMPERATURE = 0.5
+TOP_P = 0.85
 REPETITION_PENALTY = 1.2
 REPETITION_CONTEXT_SIZE = 20
 MAX_TOKENS = 3000
@@ -50,5 +50,5 @@ ATTN_IMPLEMENTATION = "sdpa"
 
 # Model paths
 # Override MODEL_NAME via env var MODEL_NAME if supplied
-MODEL_NAME = os.getenv("MODEL_NAME", "shiprocket-ai/kani-tts-2-hindi-95000")
+MODEL_NAME = os.getenv("MODEL_NAME", "shiprocket-ai/kani-tts-2-hindi-14500")
 CODEC_MODEL_NAME = "nvidia/nemo-nano-codec-22khz-0.6kbps-12.5fps"
