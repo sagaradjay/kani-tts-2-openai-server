@@ -25,10 +25,10 @@ SAMPLE_RATE = 22050
 CHUNK_SIZE = 25  # Number of new frames to output per iteration
 LOOKBACK_FRAMES = 15  # Number of frames to include from previous context
 
-# Generation configuration
-TEMPERATURE = 0.5
-TOP_P = 0.85
-REPETITION_PENALTY = 1.2
+# Generation configuration (override via env: TEMPERATURE, TOP_P, REPETITION_PENALTY)
+TEMPERATURE = float(os.getenv("TEMPERATURE", "0.5"))
+TOP_P = float(os.getenv("TOP_P", "0.85"))
+REPETITION_PENALTY = float(os.getenv("REPETITION_PENALTY", "1.2"))
 REPETITION_CONTEXT_SIZE = 20
 MAX_TOKENS = 3000
 
