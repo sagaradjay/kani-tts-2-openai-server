@@ -130,7 +130,7 @@ class OpenAISpeechRequest(BaseModel):
     """OpenAI-compatible speech request model"""
     input: str = Field(..., description="Text to convert to speech")
     model: Literal["tts-1", "tts-1-hd", "gpt-4o-mini-tts"] = Field(default="tts-1", description="TTS model to use")
-    voice: str = Field(default="speaker_1", description="Speaker name matching a .pt file in /speakers (e.g. 'speaker_1'). Use 'random' to omit voice prefix and speaker embedding.")
+    voice: str = Field(default="random", description="Speaker name matching a .pt file in /speakers (e.g. 'speaker_1'). Use 'random' or omit the field to skip speaker embedding.")
     response_format: Literal["wav", "pcm"] = Field(default="wav", description="Audio format: wav or pcm")
     stream_format: Optional[Literal["sse", "audio"]] = Field(default=None, description="Use 'sse' for Server-Sent Events streaming")
     # Long-form generation parameters
@@ -177,15 +177,16 @@ async def openai_speech(request: OpenAISpeechRequest):
     if not generator or not player:
         raise HTTPException(status_code=503, detail="TTS models not initialized")
 
-    # Look up speaker embedding
+    # Look up speaker embedding only when the caller explicitly selected a voice.
     speaker_emb = None
-    if request.voice != "random":
-        if request.voice not in speaker_embeddings:
+    requested_voice = request.voice.strip()
+    if requested_voice and requested_voice.lower() != "random":
+        if requested_voice not in speaker_embeddings:
             raise HTTPException(
                 status_code=400,
-                detail=f"Unknown voice '{request.voice}'. Available: {list(speaker_embeddings.keys())}"
+                detail=f"Unknown voice '{requested_voice}'. Available: {list(speaker_embeddings.keys())}"
             )
-        speaker_emb = speaker_embeddings[request.voice]
+        speaker_emb = speaker_embeddings[requested_voice]
 
     # Prepare prompt text (no voice prefix — speaker embedding handles identity)
     prompt_text = request.input

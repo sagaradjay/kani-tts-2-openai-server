@@ -473,9 +473,10 @@ class KaniInferenceEngine:
         # (mirrors prepare_inputs_for_generation in the HF generate path)
         inputs_embeds = None
         if speaker_emb is not None:
-            speaker_emb_bf16 = speaker_emb.to(self.device, dtype=torch.bfloat16)
+            projection_dtype = self.model.model.speaker_emb_projection.weight.dtype
+            speaker_emb_cast = speaker_emb.to(self.device, dtype=projection_dtype)
             inputs_embeds = self.model.model.embed_tokens(input_ids)
-            speaker_emb_projected = self.model.model.speaker_emb_projection(speaker_emb_bf16)
+            speaker_emb_projected = self.model.model.speaker_emb_projection(speaker_emb_cast)
             speaker_emb_projected = speaker_emb_projected.unsqueeze(1)  # [1, 1, hidden_size]
             inputs_embeds = torch.cat([
                 inputs_embeds[:, :1, :],        # First token embedding

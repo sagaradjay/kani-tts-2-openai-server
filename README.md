@@ -145,7 +145,7 @@ OpenAI-compatible endpoint for text-to-speech generation.
 |-------|------|---------|-------------|
 | `input` | string | *required* | Text to convert to speech |
 | `model` | string | `"tts-1"` | OpenAI compatibility field (no effect on model selection) |
-| `voice` | string | `"speaker_1"` | Speaker name matching a `.pt` file in `speakers/`. Use `"random"` to skip speaker embedding. |
+| `voice` | string | `"random"` | Speaker name matching a `.pt` file in `speakers/`. Use `"random"` or omit the field to skip speaker embedding. |
 | `response_format` | string | `"wav"` | `"wav"` or `"pcm"` |
 | `stream_format` | string | `null` | `null` for complete file, `"sse"` for streaming |
 | `max_chunk_duration` | float | `30.0` | Max seconds per chunk in long-form mode |

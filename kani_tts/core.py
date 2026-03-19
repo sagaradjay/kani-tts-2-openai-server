@@ -38,7 +38,7 @@ class TTSConfig:
     alpha_max: float = 2.0  # Maximum value for alpha (frequency scaling)
 
     # Speaker embedding configuration
-    speaker_emb_dim: int = 128  # Dimension of speaker embeddings
+    speaker_emb_dim: int = 192  # Dimension of speaker embeddings
 
     # Attention implementation
     attn_implementation: str = "sdpa"  # "sdpa", "flash_attention_2", or "eager"
@@ -549,8 +549,8 @@ class KaniModel:
 
         # Add speaker_emb if provided
         if speaker_emb is not None:
-            # Ensure speaker_emb is in the same dtype as the model (bf16 for Flash Attention)
-            speaker_emb = speaker_emb.to(self.device, dtype=torch.bfloat16)
+            projection_dtype = self.model.model.speaker_emb_projection.weight.dtype
+            speaker_emb = speaker_emb.to(self.device, dtype=projection_dtype)
 
         # Use inference engine if available
         if self.inference_engine is not None:

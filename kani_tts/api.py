@@ -68,7 +68,7 @@ class KaniTTS:
         use_learnable_rope: bool = False,
         alpha_min: float = 0.1,
         alpha_max: float = 2.0,
-        speaker_emb_dim: int = 128,
+        speaker_emb_dim: int = 192,
         track_rtf: bool = False,
         attn_implementation: str = "sdpa",
         use_cuda_graphs: bool = False,

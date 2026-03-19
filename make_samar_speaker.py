@@ -1,9 +1,9 @@
 """
-Utility script to create a speaker embedding for `aakash.wav`.
+Utility script to create speaker embeddings for all .wav files in voices/.
 
 Usage (from repo root):
     cd kani-tts-2-openai-server
-    python make_aakash_speaker.py
+    python make_samar_speaker.py
 
 Requirements:
     pip install transformers torchaudio
@@ -22,21 +22,31 @@ def main():
     speakers_dir = repo_dir / "speakers"
     speakers_dir.mkdir(exist_ok=True)
 
-    audio_path = voices_dir / "samar.wav"
-    if not audio_path.is_file():
-        raise FileNotFoundError(f"Could not find {audio_path}. Make sure the file exists.")
+    if not voices_dir.exists():
+        raise FileNotFoundError(f"Voices directory not found: {voices_dir}")
 
-    print(f"🎙  Computing speaker embedding from {audio_path} ...")
-    emb = compute_speaker_embedding(str(audio_path))  # [1, 128]
+    wav_files = sorted(voices_dir.glob("*.wav"))
+    if not wav_files:
+        print(f"No .wav files found in {voices_dir}")
+        return
 
-    # Our server expects .pt files that load to a 1D tensor and then get unsqueezed.
-    emb_vec = emb[0].cpu()  # [128]
+    print(f"🎙  Creating embeddings for {len(wav_files)} voice(s) in {voices_dir} ...\n")
 
-    out_path = speakers_dir / "samar.pt"
-    torch.save(emb_vec, out_path)
-    print(f"✅ Saved Aakash speaker embedding to {out_path}")
+    for audio_path in wav_files:
+        name = audio_path.stem
+        out_path = speakers_dir / f"{name}.pt"
+
+        try:
+            print(f"  Processing {audio_path.name} ...")
+            emb = compute_speaker_embedding(str(audio_path))  # [1, 128]
+            emb_vec = emb[0].cpu()  # [128]
+            torch.save(emb_vec, out_path)
+            print(f"  ✅ Saved {name}.pt")
+        except Exception as e:
+            print(f"  ⚠️  Failed {audio_path.name}: {e}")
+
+    print(f"\n✅ Done. Embeddings saved to {speakers_dir}")
 
 
 if __name__ == "__main__":
     main()
-

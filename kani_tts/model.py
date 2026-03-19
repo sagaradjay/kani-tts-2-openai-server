@@ -203,7 +203,7 @@ class FlashCompatibleLfm2Model(Lfm2Model):
         use_learnable_rope: bool = False,
         alpha_min: float = 0.1,
         alpha_max: float = 2.0,
-        speaker_emb_dim: int = 128,
+        speaker_emb_dim: int = 192,
     ):
         super().__init__(config)
         self.audio_tokens_start = audio_tokens_start
@@ -410,7 +410,7 @@ class FlashCompatibleLfm2ForCausalLM(Lfm2PreTrainedModel, GenerationMixin):
         use_learnable_rope: bool = False,
         alpha_min: float = 0.1,
         alpha_max: float = 2.0,
-        speaker_emb_dim: int = 128,
+        speaker_emb_dim: int = 192,
     ):
         super().__init__(config)
 
@@ -789,7 +789,7 @@ class FlashCompatibleLfm2ForCausalLM(Lfm2PreTrainedModel, GenerationMixin):
         use_learnable_rope: bool = False,
         alpha_min: float = 0.1,
         alpha_max: float = 2.0,
-        speaker_emb_dim: int = 128,
+        speaker_emb_dim: int = 192,
         *model_args,
         **kwargs
     ):
@@ -847,8 +847,18 @@ class FlashCompatibleLfm2ForCausalLM(Lfm2PreTrainedModel, GenerationMixin):
             # Load state dict from safetensors
             state_dict = load_file(safetensors_path)
 
-            # Load weights into our model (strict=False to allow partial loading)
-            missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+            # Load weights into our model, skipping incompatible shapes when transitioning
+            # between speaker embedding spaces (e.g. 128-d -> 192-d).
+            current_state = model.state_dict()
+            filtered_state = {
+                key: value
+                for key, value in state_dict.items()
+                if key in current_state and current_state[key].shape == value.shape
+            }
+            skipped_keys = sorted(set(state_dict.keys()) - set(filtered_state.keys()))
+            missing_keys, unexpected_keys = model.load_state_dict(filtered_state, strict=False)
+            if skipped_keys:
+                missing_keys = list(missing_keys) + skipped_keys
 
             # Handle tied weights: lm_head.weight is often tied to model.embed_tokens.weight
             if 'lm_head.weight' in missing_keys and 'model.embed_tokens.weight' in state_dict:
@@ -888,8 +898,21 @@ class FlashCompatibleLfm2ForCausalLM(Lfm2PreTrainedModel, GenerationMixin):
             # For standard models, load via transformers (no learnable RoPE parameters to preserve)
             base_model = Lfm2ForCausalLM.from_pretrained(pretrained_model_name_or_path, **base_kwargs)
 
-            # Copy weights from base model to our custom model
-            model.model.load_state_dict(base_model.model.state_dict(), strict=False)
+            # Copy weights from base model to our custom model, skipping incompatible shapes.
+            current_state = model.model.state_dict()
+            base_state = base_model.model.state_dict()
+            filtered_state = {
+                key: value
+                for key, value in base_state.items()
+                if key in current_state and current_state[key].shape == value.shape
+            }
+            skipped = sorted(set(base_state.keys()) - set(filtered_state.keys()))
+            if skipped:
+                print(f"   ⚠️  Skipping {len(skipped)} incompatible model keys during load")
+                for key in skipped[:5]:
+                    print(f"      - {key}")
+
+            model.model.load_state_dict(filtered_state, strict=False)
             model.lm_head.load_state_dict(base_model.lm_head.state_dict())
 
             # Ensure all parameters are in the correct dtype (important for Flash Attention)
