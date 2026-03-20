@@ -521,7 +521,11 @@ class KaniModel:
     def model_request(self, input_ids: torch.Tensor,
                           attention_mask: torch.Tensor,
                           speaker_emb: Optional[torch.Tensor] = None,
-                          token_callback: Optional[callable] = None) -> torch.Tensor:
+                          token_callback: Optional[callable] = None,
+                          max_new_tokens: Optional[int] = None,
+                          temperature: Optional[float] = None,
+                          top_p: Optional[float] = None,
+                          repetition_penalty: Optional[float] = None) -> torch.Tensor:
         """
         Generate audio tokens from text tokens.
 
@@ -534,15 +538,22 @@ class KaniModel:
         input_ids = input_ids.to(self.device)
         attention_mask = attention_mask.to(self.device)
 
+        effective_max_new_tokens = max_new_tokens if max_new_tokens is not None else self.conf.max_new_tokens
+        effective_temperature = temperature if temperature is not None else self.conf.temperature
+        effective_top_p = top_p if top_p is not None else self.conf.top_p
+        effective_repetition_penalty = (
+            repetition_penalty if repetition_penalty is not None else self.conf.repetition_penalty
+        )
+
         # Prepare kwargs for generation
         gen_kwargs = {
             'input_ids': input_ids,
             'attention_mask': attention_mask,
-            'max_new_tokens': self.conf.max_new_tokens,
+            'max_new_tokens': effective_max_new_tokens,
             'do_sample': True,
-            'temperature': self.conf.temperature,
-            'top_p': self.conf.top_p,
-            'repetition_penalty': self.conf.repetition_penalty,
+            'temperature': effective_temperature,
+            'top_p': effective_top_p,
+            'repetition_penalty': effective_repetition_penalty,
             'num_return_sequences': 1,
             'eos_token_id': self.player.end_of_speech,
         }
@@ -554,14 +565,32 @@ class KaniModel:
 
         # Use inference engine if available
         if self.inference_engine is not None:
-            with torch.no_grad():
-                generated_ids = self.inference_engine.generate(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    eos_token_id=self.player.end_of_speech,
-                    speaker_emb=speaker_emb,
-                    token_callback=token_callback,
-                )
+            old_settings = (
+                self.inference_engine.max_new_tokens,
+                self.inference_engine.temperature,
+                self.inference_engine.top_p,
+                self.inference_engine.repetition_penalty,
+            )
+            self.inference_engine.max_new_tokens = effective_max_new_tokens
+            self.inference_engine.temperature = effective_temperature
+            self.inference_engine.top_p = effective_top_p
+            self.inference_engine.repetition_penalty = effective_repetition_penalty
+            try:
+                with torch.no_grad():
+                    generated_ids = self.inference_engine.generate(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        eos_token_id=self.player.end_of_speech,
+                        speaker_emb=speaker_emb,
+                        token_callback=token_callback,
+                    )
+            finally:
+                (
+                    self.inference_engine.max_new_tokens,
+                    self.inference_engine.temperature,
+                    self.inference_engine.top_p,
+                    self.inference_engine.repetition_penalty,
+                ) = old_settings
         else:
             # Standard HuggingFace generation (no streaming callback support)
             if speaker_emb is not None:

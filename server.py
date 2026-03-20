@@ -17,7 +17,7 @@ import json
 from audio import StreamingAudioWriter
 from generation.kani_generator import KaniTTSGenerator
 from pathlib import Path
-from config import CHUNK_SIZE, LOOKBACK_FRAMES, TEMPERATURE, TOP_P, MAX_TOKENS, LONG_FORM_THRESHOLD_SECONDS, LONG_FORM_SILENCE_DURATION, LONG_FORM_CHUNK_DURATION
+from config import CHUNK_SIZE, LOOKBACK_FRAMES, TEMPERATURE, TOP_P, REPETITION_PENALTY, MAX_TOKENS, LONG_FORM_THRESHOLD_SECONDS, LONG_FORM_SILENCE_DURATION, LONG_FORM_CHUNK_DURATION
 from speaker_embedder import SpeakerEmbedder
 
 SPEAKERS_DIR = Path(__file__).parent / "speakers"
@@ -65,6 +65,14 @@ async def auth_middleware(request: Request, call_next):
 generator = None
 player = None
 speaker_embeddings: dict[str, torch.Tensor] = {}
+
+
+def build_prompt_text(target_text: str, ref_text: Optional[str] = None) -> str:
+    """Serialize prompt text in the same format used by cloning-stage training."""
+    target_text = target_text.strip()
+    if ref_text and ref_text.strip():
+        return f"Reference text: {ref_text.strip()}\nTarget text: {target_text}"
+    return target_text
 
 
 def build_voice_embeddings():
@@ -129,10 +137,15 @@ class TTSRequest(BaseModel):
 class OpenAISpeechRequest(BaseModel):
     """OpenAI-compatible speech request model"""
     input: str = Field(..., description="Text to convert to speech")
+    ref_text: Optional[str] = Field(default=None, description="Optional reference transcript paired with the reference voice audio/embedding")
     model: Literal["tts-1", "tts-1-hd", "gpt-4o-mini-tts"] = Field(default="tts-1", description="TTS model to use")
     voice: str = Field(default="random", description="Speaker name matching a .pt file in /speakers (e.g. 'speaker_1'). Use 'random' or omit the field to skip speaker embedding.")
     response_format: Literal["wav", "pcm"] = Field(default="wav", description="Audio format: wav or pcm")
     stream_format: Optional[Literal["sse", "audio"]] = Field(default=None, description="Use 'sse' for Server-Sent Events streaming")
+    temperature: Optional[float] = Field(default=TEMPERATURE, description="Sampling temperature")
+    top_p: Optional[float] = Field(default=TOP_P, description="Top-p nucleus sampling")
+    repetition_penalty: Optional[float] = Field(default=REPETITION_PENALTY, description="Penalty for recently used tokens")
+    max_tokens: Optional[int] = Field(default=MAX_TOKENS, description="Maximum audio tokens to generate")
     # Long-form generation parameters
     enable_long_form: Optional[bool] = Field(default=True, description="Auto-detect and use long-form generation for texts >15s")
     max_chunk_duration: Optional[float] = Field(default=12.0, description="Max duration per chunk in long-form mode (seconds)")
@@ -189,7 +202,7 @@ async def openai_speech(request: OpenAISpeechRequest):
         speaker_emb = speaker_embeddings[requested_voice]
 
     # Prepare prompt text (no voice prefix — speaker embedding handles identity)
-    prompt_text = request.input
+    prompt_text = build_prompt_text(request.input, request.ref_text)
 
     # Streaming mode (SSE)
     if request.stream_format == "sse":
@@ -236,16 +249,20 @@ async def openai_speech(request: OpenAISpeechRequest):
                             audio_writer.audio_chunks = ChunkList()
                             audio_writer.start()
 
+                            chunk_prompt_text = build_prompt_text(text_chunk, request.ref_text)
                             result = await generator._generate_async(
-                                text_chunk,
+                                chunk_prompt_text,
                                 audio_writer,
-                                max_tokens=MAX_TOKENS,
+                                max_tokens=request.max_tokens or MAX_TOKENS,
                                 speaker_emb=speaker_emb,
+                                temperature=request.temperature,
+                                top_p=request.top_p,
+                                repetition_penalty=request.repetition_penalty,
                             )
                             audio_writer.finalize()
 
                             # Track tokens
-                            input_token_count += len(generator.prepare_input(text_chunk))
+                            input_token_count += len(generator.prepare_input(chunk_prompt_text))
                             output_token_count += len(result.get('all_token_ids', []))
 
                             # Add silence between chunks (except after last chunk)
@@ -288,8 +305,11 @@ async def openai_speech(request: OpenAISpeechRequest):
                         result = await generator._generate_async(
                             prompt_text,
                             audio_writer,
-                            max_tokens=MAX_TOKENS,
+                            max_tokens=request.max_tokens or MAX_TOKENS,
                             speaker_emb=speaker_emb,
+                            temperature=request.temperature,
+                            top_p=request.top_p,
+                            repetition_penalty=request.repetition_penalty,
                         )
                         audio_writer.finalize()
 
@@ -381,8 +401,12 @@ async def openai_speech(request: OpenAISpeechRequest):
                     player=player,
                     max_chunk_duration=request.max_chunk_duration or LONG_FORM_CHUNK_DURATION,
                     silence_duration=request.silence_duration or LONG_FORM_SILENCE_DURATION,
-                    max_tokens=MAX_TOKENS,
+                    max_tokens=request.max_tokens or MAX_TOKENS,
                     speaker_emb=speaker_emb,
+                    temperature=request.temperature,
+                    top_p=request.top_p,
+                    repetition_penalty=request.repetition_penalty,
+                    ref_text=request.ref_text,
                 )
                 full_audio = result['audio']
             else:
@@ -400,8 +424,11 @@ async def openai_speech(request: OpenAISpeechRequest):
                 result = await generator._generate_async(
                     prompt_text,
                     audio_writer,
-                    max_tokens=MAX_TOKENS,
+                    max_tokens=request.max_tokens or MAX_TOKENS,
                     speaker_emb=speaker_emb,
+                    temperature=request.temperature,
+                    top_p=request.top_p,
+                    repetition_penalty=request.repetition_penalty,
                 )
 
                 # Finalize and get audio

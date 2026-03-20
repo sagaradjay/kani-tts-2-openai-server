@@ -64,7 +64,10 @@ class KaniTTSGenerator:
         return input_ids[0].tolist()
 
     async def _generate_async(self, prompt_text: str, audio_writer, max_tokens: int = MAX_TOKENS,
-                               speaker_emb: Optional[torch.Tensor] = None):
+                               speaker_emb: Optional[torch.Tensor] = None,
+                               temperature: Optional[float] = None,
+                               top_p: Optional[float] = None,
+                               repetition_penalty: Optional[float] = None):
         """Async generation with token-level streaming to audio_writer.
 
         Args:
@@ -113,6 +116,10 @@ class KaniTTSGenerator:
                     attention_mask=attention_mask,
                     speaker_emb=speaker_emb,
                     token_callback=token_callback,
+                    max_new_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    repetition_penalty=repetition_penalty,
                 )
 
             await loop.run_in_executor(None, run_generation)
@@ -145,7 +152,10 @@ class KaniTTSGenerator:
 
     async def generate_long_form_async(self, text, player, max_chunk_duration=12.0,
                                        silence_duration=0.2, max_tokens=MAX_TOKENS,
-                                       speaker_emb=None):
+                                       speaker_emb=None, temperature: Optional[float] = None,
+                                       top_p: Optional[float] = None,
+                                       repetition_penalty: Optional[float] = None,
+                                       ref_text: Optional[str] = None):
         """Generate speech for long text by splitting into chunks."""
         from generation.chunking import split_into_sentences, estimate_duration
         from audio.streaming import StreamingAudioWriter
@@ -163,6 +173,9 @@ class KaniTTSGenerator:
 
         for i, chunk in enumerate(chunks):
             print(f"\n[Long-form] Generating chunk {i+1}/{len(chunks)}: '{chunk[:50]}...'")
+            prompt_text = chunk if not ref_text or not ref_text.strip() else (
+                f"Reference text: {ref_text.strip()}\nTarget text: {chunk}"
+            )
 
             audio_writer = StreamingAudioWriter(
                 player,
@@ -172,8 +185,15 @@ class KaniTTSGenerator:
             )
             audio_writer.start()
 
-            result = await self._generate_async(chunk, audio_writer, max_tokens=max_tokens,
-                                                    speaker_emb=speaker_emb)
+            result = await self._generate_async(
+                prompt_text,
+                audio_writer,
+                max_tokens=max_tokens,
+                speaker_emb=speaker_emb,
+                temperature=temperature,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+            )
 
             audio = audio_writer.finalize()
 
