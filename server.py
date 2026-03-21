@@ -22,6 +22,7 @@ from speaker_embedder import SpeakerEmbedder
 
 SPEAKERS_DIR = Path(__file__).parent / "speakers"
 VOICES_DIR = Path(__file__).parent / "voices"
+VOICE_REF_TEXTS_DIR = Path(__file__).parent / "voice_ref_texts"
 
 # AUTH_TOKEN: when set (non-empty), API requires Authorization: Bearer <token>
 # Pass at runtime via -e AUTH_TOKEN=... ; if not set, defaults to "" (no auth)
@@ -75,6 +76,16 @@ def build_prompt_text(target_text: str, ref_text: Optional[str] = None) -> str:
     return target_text
 
 
+def load_voice_ref_text(voice_name: str) -> Optional[str]:
+    """Load per-voice reference text from voice_ref_texts/<voice>.txt."""
+    ref_text_path = VOICE_REF_TEXTS_DIR / f"{voice_name}.txt"
+    if not ref_text_path.exists():
+        return None
+
+    ref_text = ref_text_path.read_text(encoding="utf-8").strip()
+    return ref_text or None
+
+
 def build_voice_embeddings():
     """
     On startup, scan the voices directory for audio files and create
@@ -87,6 +98,7 @@ def build_voice_embeddings():
         return
 
     SPEAKERS_DIR.mkdir(exist_ok=True, parents=True)
+    VOICE_REF_TEXTS_DIR.mkdir(exist_ok=True, parents=True)
 
     # Instantiate embedder once and reuse for all voices
     embedder = SpeakerEmbedder()
@@ -160,6 +172,7 @@ async def startup_event():
 
     # First, build any missing embeddings from raw voice files
     build_voice_embeddings()
+    VOICE_REF_TEXTS_DIR.mkdir(exist_ok=True, parents=True)
 
     load_speaker_embeddings()
 
@@ -201,8 +214,12 @@ async def openai_speech(request: OpenAISpeechRequest):
             )
         speaker_emb = speaker_embeddings[requested_voice]
 
+    resolved_ref_text = request.ref_text
+    if (not resolved_ref_text or not resolved_ref_text.strip()) and requested_voice:
+        resolved_ref_text = load_voice_ref_text(requested_voice)
+
     # Prepare prompt text (no voice prefix — speaker embedding handles identity)
-    prompt_text = build_prompt_text(request.input, request.ref_text)
+    prompt_text = build_prompt_text(request.input, resolved_ref_text)
 
     # Streaming mode (SSE)
     if request.stream_format == "sse":
@@ -249,7 +266,7 @@ async def openai_speech(request: OpenAISpeechRequest):
                             audio_writer.audio_chunks = ChunkList()
                             audio_writer.start()
 
-                            chunk_prompt_text = build_prompt_text(text_chunk, request.ref_text)
+                            chunk_prompt_text = build_prompt_text(text_chunk, resolved_ref_text)
                             result = await generator._generate_async(
                                 chunk_prompt_text,
                                 audio_writer,
@@ -406,7 +423,7 @@ async def openai_speech(request: OpenAISpeechRequest):
                     temperature=request.temperature,
                     top_p=request.top_p,
                     repetition_penalty=request.repetition_penalty,
-                    ref_text=request.ref_text,
+                    ref_text=resolved_ref_text,
                 )
                 full_audio = result['audio']
             else:
