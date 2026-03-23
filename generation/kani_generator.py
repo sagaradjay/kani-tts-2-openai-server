@@ -12,6 +12,7 @@ from config import (
     MODEL_NAME, SAMPLE_RATE, TEMPERATURE, TOP_P, REPETITION_PENALTY, MAX_TOKENS,
     TEXT_VOCAB_SIZE, TOKENS_PER_FRAME, AUDIO_STEP,
     USE_LEARNABLE_ROPE, ALPHA_MIN, ALPHA_MAX, SPEAKER_EMB_DIM,
+    ENABLE_SPEAKER_ADAPTERS, SPEAKER_ADAPTER_LAYERS, SPEAKER_ADAPTER_HIDDEN_DIM,
     USE_CUDA_GRAPHS, ATTN_IMPLEMENTATION, START_OF_SPEECH,
 )
 
@@ -42,6 +43,9 @@ class KaniTTSGenerator:
             alpha_min=ALPHA_MIN,
             alpha_max=ALPHA_MAX,
             speaker_emb_dim=SPEAKER_EMB_DIM,
+            enable_speaker_adapters=ENABLE_SPEAKER_ADAPTERS if ENABLE_SPEAKER_ADAPTERS else None,
+            speaker_adapter_layers=SPEAKER_ADAPTER_LAYERS or None,
+            speaker_adapter_hidden_dim=SPEAKER_ADAPTER_HIDDEN_DIM,
             use_cuda_graphs=USE_CUDA_GRAPHS,
             attn_implementation=ATTN_IMPLEMENTATION,
         )

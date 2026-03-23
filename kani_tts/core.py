@@ -39,6 +39,9 @@ class TTSConfig:
 
     # Speaker embedding configuration
     speaker_emb_dim: int = 192  # Dimension of speaker embeddings
+    enable_speaker_adapters: Optional[bool] = None
+    speaker_adapter_layers: Optional[str] = None
+    speaker_adapter_hidden_dim: Optional[int] = None
 
     # Attention implementation
     attn_implementation: str = "sdpa"  # "sdpa", "flash_attention_2", or "eager"
@@ -183,12 +186,25 @@ class KaniModel:
             alpha_min=self.conf.alpha_min,
             alpha_max=self.conf.alpha_max,
             speaker_emb_dim=self.conf.speaker_emb_dim,
+            enable_speaker_adapters=self.conf.enable_speaker_adapters,
+            speaker_adapter_layers=self.conf.speaker_adapter_layers,
+            speaker_adapter_hidden_dim=self.conf.speaker_adapter_hidden_dim,
             torch_dtype=torch.bfloat16,
             device_map=self.conf.device_map,
             attn_implementation=self.conf.attn_implementation,
         )
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.conf.enable_speaker_adapters = getattr(self.model.config, "enable_speaker_adapters", False)
+        adapter_layers = getattr(self.model.config, "speaker_adapter_layers", None)
+        self.conf.speaker_adapter_layers = ",".join(str(x) for x in adapter_layers) if isinstance(adapter_layers, list) else adapter_layers
+        self.conf.speaker_adapter_hidden_dim = getattr(self.model.config, "speaker_adapter_hidden_dim", None)
+        if self.conf.enable_speaker_adapters:
+            print(
+                "✅ Speaker adapters active: "
+                f"layers={self.conf.speaker_adapter_layers}, "
+                f"hidden={self.conf.speaker_adapter_hidden_dim}"
+            )
 
         self.speaker_settings = getattr(self.model.config, 'speaker_settings', None)
         self.status = 'singlspeaker'

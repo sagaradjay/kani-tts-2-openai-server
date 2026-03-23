@@ -69,6 +69,9 @@ class KaniTTS:
         alpha_min: float = 0.1,
         alpha_max: float = 2.0,
         speaker_emb_dim: int = 192,
+        enable_speaker_adapters: Optional[bool] = None,
+        speaker_adapter_layers: Optional[str] = None,
+        speaker_adapter_hidden_dim: Optional[int] = None,
         track_rtf: bool = False,
         attn_implementation: str = "sdpa",
         use_cuda_graphs: bool = False,
@@ -93,6 +96,9 @@ class KaniTTS:
             alpha_min: Minimum alpha value for learnable RoPE (default: 0.1)
             alpha_max: Maximum alpha value for learnable RoPE (default: 2.0)
             speaker_emb_dim: Dimension of speaker embeddings (default: 128)
+            enable_speaker_adapters: Enable multi-layer speaker adapters (default: read from checkpoint config)
+            speaker_adapter_layers: Layers to condition (e.g. "all_attention")
+            speaker_adapter_hidden_dim: Hidden dim for adapter MLP
             track_rtf: Enable Real Time Factor tracking (default: False)
             attn_implementation: Attention implementation ("sdpa", "flash_attention_2", "eager")
             use_cuda_graphs: Enable CUDA graphs for decode phase (default: False, 1.3-1.5x speedup)
@@ -114,6 +120,9 @@ class KaniTTS:
             alpha_min=alpha_min,
             alpha_max=alpha_max,
             speaker_emb_dim=speaker_emb_dim,
+            enable_speaker_adapters=enable_speaker_adapters,
+            speaker_adapter_layers=speaker_adapter_layers,
+            speaker_adapter_hidden_dim=speaker_adapter_hidden_dim,
             attn_implementation=attn_implementation,
             use_cuda_graphs=use_cuda_graphs,
         )

@@ -28,6 +28,53 @@ from transformers.models.lfm2.modeling_lfm2 import (
 )
 from transformers.models.lfm2.configuration_lfm2 import Lfm2Config
 
+
+class NoOpSpeakerAdapter(nn.Module):
+    """Fallback adapter for layers without speaker conditioning."""
+
+    def forward(self, hidden_states: torch.Tensor, speaker_emb: torch.Tensor) -> torch.Tensor:
+        return hidden_states
+
+
+class SpeakerFiLMAdapter(nn.Module):
+    """Lightweight FiLM-style speaker adapter applied at multiple decoder layers."""
+
+    def __init__(self, speaker_emb_dim: int, hidden_size: int, adapter_hidden_dim: int = 256):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(speaker_emb_dim, adapter_hidden_dim),
+            nn.SiLU(),
+            nn.Linear(adapter_hidden_dim, hidden_size * 2),
+        )
+
+    def forward(self, hidden_states: torch.Tensor, speaker_emb: torch.Tensor) -> torch.Tensor:
+        scale_shift = self.mlp(speaker_emb)
+        scale, shift = scale_shift.chunk(2, dim=-1)
+        scale = 0.1 * torch.tanh(scale).unsqueeze(1)
+        shift = 0.1 * torch.tanh(shift).unsqueeze(1)
+        return hidden_states * (1.0 + scale) + shift
+
+
+def resolve_speaker_adapter_layers(config: Lfm2Config, layer_spec: Optional[Union[str, Tuple[int, ...], list]]) -> set[int]:
+    """Resolve adapter layer selection from a config string/list."""
+    if layer_spec is None:
+        return set()
+    if isinstance(layer_spec, (tuple, list)):
+        return {int(x) for x in layer_spec}
+
+    spec = str(layer_spec).strip().lower()
+    if not spec or spec == "none":
+        return set()
+    if spec == "all":
+        return set(range(config.num_hidden_layers))
+    if spec in {"attention", "all_attention"}:
+        if hasattr(config, "layer_types") and config.layer_types is not None:
+            return {idx for idx, layer_type in enumerate(config.layer_types) if layer_type == "full_attention"}
+        if hasattr(config, "full_attn_idxs") and config.full_attn_idxs is not None:
+            return {int(idx) for idx in config.full_attn_idxs}
+        return set(range(config.num_hidden_layers))
+    return {int(part.strip()) for part in spec.split(",") if part.strip()}
+
 def compute_frame_level_positions(
     input_ids: torch.Tensor,
     audio_tokens_start: int,
@@ -204,6 +251,9 @@ class FlashCompatibleLfm2Model(Lfm2Model):
         alpha_min: float = 0.1,
         alpha_max: float = 2.0,
         speaker_emb_dim: int = 192,
+        enable_speaker_adapters: bool = False,
+        speaker_adapter_layers: Optional[Union[str, Tuple[int, ...], list]] = None,
+        speaker_adapter_hidden_dim: int = 256,
     ):
         super().__init__(config)
         self.audio_tokens_start = audio_tokens_start
@@ -213,9 +263,22 @@ class FlashCompatibleLfm2Model(Lfm2Model):
         self.alpha_min = alpha_min
         self.alpha_max = alpha_max
         self.speaker_emb_dim = speaker_emb_dim
+        self.enable_speaker_adapters = enable_speaker_adapters
 
         # Speaker embedding projection: 128 -> hidden_size (typically 1024)
         self.speaker_emb_projection = nn.Linear(speaker_emb_dim, config.hidden_size, bias=False)
+        self.speaker_adapter_layers = resolve_speaker_adapter_layers(
+            config,
+            speaker_adapter_layers if enable_speaker_adapters else None,
+        )
+        self.speaker_adapters = nn.ModuleList([
+            SpeakerFiLMAdapter(speaker_emb_dim, config.hidden_size, speaker_adapter_hidden_dim)
+            if idx in self.speaker_adapter_layers else NoOpSpeakerAdapter()
+            for idx in range(config.num_hidden_layers)
+        ])
+        self.config.enable_speaker_adapters = enable_speaker_adapters
+        self.config.speaker_adapter_layers = sorted(self.speaker_adapter_layers)
+        self.config.speaker_adapter_hidden_dim = speaker_adapter_hidden_dim
 
         # Initialize learnable RoPE if enabled
         if use_learnable_rope:
@@ -255,6 +318,8 @@ class FlashCompatibleLfm2Model(Lfm2Model):
             print(f"   - Using frame-level position encoding (BemaTTS)")
             print(f"   - Learnable RoPE ENABLED for {total_attention_layers} attention layers")
             print(f"   - Alpha range: [{alpha_min}, {alpha_max}]")
+            if self.enable_speaker_adapters:
+                print(f"   - Speaker adapters: ENABLED on layers {sorted(self.speaker_adapter_layers)} (hidden={speaker_adapter_hidden_dim})")
         else:
             self.learnable_rope_layers = None
             print(f"✅ FlashCompatibleLfm2Model initialized:")
@@ -264,6 +329,8 @@ class FlashCompatibleLfm2Model(Lfm2Model):
             print(f"   - Speaker embedding: {speaker_emb_dim} -> {config.hidden_size}")
             print(f"   - Using frame-level position encoding (BemaTTS)")
             print(f"   - Learnable RoPE DISABLED (standard RoPE)")
+            if self.enable_speaker_adapters:
+                print(f"   - Speaker adapters: ENABLED on layers {sorted(self.speaker_adapter_layers)} (hidden={speaker_adapter_hidden_dim})")
 
     def forward(
         self,
@@ -377,6 +444,8 @@ class FlashCompatibleLfm2Model(Lfm2Model):
                 position_embeddings=position_embeddings,
                 **kwargs,
             )
+            if speaker_emb is not None and self.enable_speaker_adapters:
+                hidden_states = self.speaker_adapters[layer_idx](hidden_states, speaker_emb)
 
         hidden_states = self.embedding_norm(hidden_states)
 
@@ -411,6 +480,9 @@ class FlashCompatibleLfm2ForCausalLM(Lfm2PreTrainedModel, GenerationMixin):
         alpha_min: float = 0.1,
         alpha_max: float = 2.0,
         speaker_emb_dim: int = 192,
+        enable_speaker_adapters: bool = False,
+        speaker_adapter_layers: Optional[Union[str, Tuple[int, ...], list]] = None,
+        speaker_adapter_hidden_dim: int = 256,
     ):
         super().__init__(config)
 
@@ -424,6 +496,9 @@ class FlashCompatibleLfm2ForCausalLM(Lfm2PreTrainedModel, GenerationMixin):
             alpha_min=alpha_min,
             alpha_max=alpha_max,
             speaker_emb_dim=speaker_emb_dim,
+            enable_speaker_adapters=enable_speaker_adapters,
+            speaker_adapter_layers=speaker_adapter_layers,
+            speaker_adapter_hidden_dim=speaker_adapter_hidden_dim,
         )
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
@@ -436,6 +511,9 @@ class FlashCompatibleLfm2ForCausalLM(Lfm2PreTrainedModel, GenerationMixin):
         self.alpha_min = alpha_min
         self.alpha_max = alpha_max
         self.speaker_emb_dim = speaker_emb_dim
+        self.config.enable_speaker_adapters = enable_speaker_adapters
+        self.config.speaker_adapter_layers = sorted(self.model.speaker_adapter_layers)
+        self.config.speaker_adapter_hidden_dim = speaker_adapter_hidden_dim
 
         # State for simplified position tracking
         self._prefill_length = None
@@ -790,6 +868,9 @@ class FlashCompatibleLfm2ForCausalLM(Lfm2PreTrainedModel, GenerationMixin):
         alpha_min: float = 0.1,
         alpha_max: float = 2.0,
         speaker_emb_dim: int = 192,
+        enable_speaker_adapters: Optional[bool] = None,
+        speaker_adapter_layers: Optional[Union[str, Tuple[int, ...], list]] = None,
+        speaker_adapter_hidden_dim: Optional[int] = None,
         *model_args,
         **kwargs
     ):
@@ -808,11 +889,21 @@ class FlashCompatibleLfm2ForCausalLM(Lfm2PreTrainedModel, GenerationMixin):
         """
         # Filter out our custom parameters before passing to base class
         base_kwargs = {k: v for k, v in kwargs.items()
-                      if k not in ['use_learnable_rope', 'alpha_min', 'alpha_max', 'speaker_emb_dim']}
+                      if k not in ['use_learnable_rope', 'alpha_min', 'alpha_max', 'speaker_emb_dim',
+                                   'enable_speaker_adapters', 'speaker_adapter_layers', 'speaker_adapter_hidden_dim']}
 
         # Load config
         from transformers import AutoConfig
         config = AutoConfig.from_pretrained(pretrained_model_name_or_path, **base_kwargs)
+        if enable_speaker_adapters is None:
+            enable_speaker_adapters = bool(getattr(config, "enable_speaker_adapters", False))
+        if speaker_adapter_layers is None:
+            speaker_adapter_layers = getattr(config, "speaker_adapter_layers", None)
+        if speaker_adapter_hidden_dim is None:
+            speaker_adapter_hidden_dim = int(getattr(config, "speaker_adapter_hidden_dim", 256))
+        config.enable_speaker_adapters = enable_speaker_adapters
+        config.speaker_adapter_layers = speaker_adapter_layers
+        config.speaker_adapter_hidden_dim = speaker_adapter_hidden_dim
 
         # Create model with BemaTTS position encoding and optional learnable RoPE
         model = cls(
@@ -824,6 +915,9 @@ class FlashCompatibleLfm2ForCausalLM(Lfm2PreTrainedModel, GenerationMixin):
             alpha_min=alpha_min,
             alpha_max=alpha_max,
             speaker_emb_dim=speaker_emb_dim,
+            enable_speaker_adapters=enable_speaker_adapters,
+            speaker_adapter_layers=speaker_adapter_layers,
+            speaker_adapter_hidden_dim=speaker_adapter_hidden_dim,
         )
 
         # Load pretrained weights
