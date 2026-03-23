@@ -2,6 +2,7 @@
 
 import io
 import os
+from functools import lru_cache
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -65,6 +66,7 @@ async def auth_middleware(request: Request, call_next):
 # Global instances (initialized on startup)
 generator = None
 player = None
+speaker_embedder = None
 speaker_embeddings: dict[str, torch.Tensor] = {}
 
 
@@ -76,14 +78,66 @@ def build_prompt_text(target_text: str, ref_text: Optional[str] = None) -> str:
     return target_text
 
 
+@lru_cache(maxsize=1)
+def load_shared_voice_ref_texts() -> dict[str, str]:
+    """Load voice -> ref_text mappings from voices/ref_text.txt."""
+    shared_ref_path = VOICES_DIR / "ref_text.txt"
+    mappings: dict[str, str] = {}
+
+    if not shared_ref_path.exists():
+        return mappings
+
+    for raw_line in shared_ref_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, sep, text = line.partition(",")
+        if not sep:
+            continue
+        voice_name = name.strip()
+        ref_text = text.strip()
+        if voice_name and ref_text:
+            mappings[voice_name] = ref_text
+
+    return mappings
+
+
 def load_voice_ref_text(voice_name: str) -> Optional[str]:
-    """Load per-voice reference text from voice_ref_texts/<voice>.txt."""
+    """Load reference text from voices/ref_text.txt or legacy voice_ref_texts/<voice>.txt."""
+    shared_mappings = load_shared_voice_ref_texts()
+    if voice_name in shared_mappings:
+        return shared_mappings[voice_name]
+
+    # Legacy fallback
     ref_text_path = VOICE_REF_TEXTS_DIR / f"{voice_name}.txt"
     if not ref_text_path.exists():
         return None
 
     ref_text = ref_text_path.read_text(encoding="utf-8").strip()
     return ref_text or None
+
+
+def compute_speaker_similarity(reference_emb: Optional[torch.Tensor], generated_audio: np.ndarray) -> Optional[float]:
+    """Compute cosine similarity between the reference speaker embedding and generated audio embedding."""
+    if speaker_embedder is None or reference_emb is None or generated_audio is None or generated_audio.size == 0:
+        return None
+
+    try:
+        generated_emb = speaker_embedder.embed_audio(generated_audio, sample_rate=22050)
+        ref_vec = reference_emb.detach().float().cpu().view(1, -1)
+        gen_vec = generated_emb.detach().float().cpu().view(1, -1)
+        return torch.nn.functional.cosine_similarity(ref_vec, gen_vec, dim=-1).item()
+    except Exception as e:
+        print(f"[Server] Failed to compute speaker similarity: {e}")
+        return None
+
+
+def log_speaker_similarity(requested_voice: str, similarity: Optional[float]):
+    """Log speaker similarity if available."""
+    if similarity is None:
+        return
+    voice_label = requested_voice or "random"
+    print(f"[Server] Speaker similarity for '{voice_label}': {similarity:.4f}")
 
 
 def build_voice_embeddings():
@@ -167,14 +221,16 @@ class OpenAISpeechRequest(BaseModel):
 @app.on_event("startup")
 async def startup_event():
     """Initialize models on startup"""
-    global generator, player
+    global generator, player, speaker_embedder
     print("🚀 Initializing KaniTTS custom engine...")
 
     # First, build any missing embeddings from raw voice files
     build_voice_embeddings()
     VOICE_REF_TEXTS_DIR.mkdir(exist_ok=True, parents=True)
+    load_shared_voice_ref_texts.cache_clear()
 
     load_speaker_embeddings()
+    speaker_embedder = SpeakerEmbedder()
 
     generator = KaniTTSGenerator()
 
@@ -368,13 +424,23 @@ async def openai_speech(request: OpenAISpeechRequest):
                     elif msg_type == "done":
                         # Send SSE event: speech.audio.done with usage stats
                         token_counts = data
+                        similarity = None
+                        if requested_voice and requested_voice.lower() != "random" and audio_writer.audio_chunks:
+                            try:
+                                full_audio = np.concatenate(audio_writer.audio_chunks)
+                            except Exception:
+                                full_audio = None
+                            if full_audio is not None:
+                                similarity = compute_speaker_similarity(speaker_emb, full_audio)
+                                log_speaker_similarity(requested_voice, similarity)
                         event_data = {
                             "type": "speech.audio.done",
                             "usage": {
                                 "input_tokens": token_counts["input"],
                                 "output_tokens": token_counts["output"],
                                 "total_tokens": token_counts["input"] + token_counts["output"]
-                            }
+                            },
+                            "speaker_similarity": similarity,
                         }
                         yield f"data: {json.dumps(event_data)}\n\n"
                         break
@@ -457,6 +523,11 @@ async def openai_speech(request: OpenAISpeechRequest):
                 # Concatenate all chunks
                 full_audio = np.concatenate(audio_writer.audio_chunks)
 
+            similarity = None
+            if requested_voice and requested_voice.lower() != "random":
+                similarity = compute_speaker_similarity(speaker_emb, full_audio)
+                log_speaker_similarity(requested_voice, similarity)
+
             # Return based on response_format
             if request.response_format == "pcm":
                 # Return raw PCM (int16)
@@ -468,7 +539,8 @@ async def openai_speech(request: OpenAISpeechRequest):
                         "Content-Type": "application/octet-stream",
                         "X-Sample-Rate": "22050",
                         "X-Channels": "1",
-                        "X-Bit-Depth": "16"
+                        "X-Bit-Depth": "16",
+                        "X-Speaker-Similarity": f"{similarity:.4f}" if similarity is not None else "",
                     }
                 )
             else:  # wav
@@ -479,7 +551,10 @@ async def openai_speech(request: OpenAISpeechRequest):
 
                 return Response(
                     content=wav_buffer.read(),
-                    media_type="audio/wav"
+                    media_type="audio/wav",
+                    headers={
+                        "X-Speaker-Similarity": f"{similarity:.4f}" if similarity is not None else "",
+                    }
                 )
 
         except Exception as e:
